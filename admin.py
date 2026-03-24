@@ -2,6 +2,10 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import datetime
+import joblib
+
+from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 # -----------------------------
 # DB CONNECTION
@@ -11,7 +15,7 @@ conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # -----------------------------
-# ENSURE TABLES EXIST (NO ERROR)
+# ENSURE TABLES EXIST
 # -----------------------------
 
 cursor.execute("""
@@ -51,10 +55,6 @@ password = st.text_input("Admin Password", type="password")
 if password != "admin123":
     st.warning("Enter correct password")
     st.stop()
-
-# -----------------------------
-# REFRESH BUTTON
-# -----------------------------
 
 if st.button("🔄 Refresh Dashboard"):
     st.rerun()
@@ -96,7 +96,7 @@ except:
     st.warning("No employee data yet")
 
 # -----------------------------
-# CURRENT VIDEO TRACKING
+# CURRENT VIDEO
 # -----------------------------
 
 st.subheader("🎬 Current Video per Employee")
@@ -155,7 +155,58 @@ except:
     st.warning("No sentiment data yet")
 
 # -----------------------------
-# DOWNLOAD SIMPLE REPORT
+# MODEL PERFORMANCE METRICS
+# -----------------------------
+
+st.subheader("📈 Model Performance (Real Metrics)")
+
+accuracy = precision = recall = f1 = 0
+
+try:
+    data = pd.read_sql("""
+
+    SELECT 
+    comments.comment_text,
+    labels.label
+
+    FROM labels
+    JOIN comments
+    ON comments.id = labels.comment_id
+
+    """, conn)
+
+    if len(data) > 0:
+
+        vectorizer = HashingVectorizer(
+            n_features=2**18,
+            alternate_sign=False
+        )
+
+        model = joblib.load("model.pkl")
+
+        X = vectorizer.transform(data["comment_text"])
+
+        y_true = data["label"]
+        y_pred = model.predict(X)
+
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        recall = recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+
+        st.metric("Accuracy", round(accuracy, 3))
+        st.metric("Precision", round(precision, 3))
+        st.metric("Recall", round(recall, 3))
+        st.metric("F1 Score", round(f1, 3))
+
+    else:
+        st.warning("Not enough labeled data yet")
+
+except:
+    st.warning("Error calculating metrics")
+
+# -----------------------------
+# DOWNLOAD REPORTS
 # -----------------------------
 
 st.subheader("⬇️ Download Reports")
@@ -172,10 +223,6 @@ try:
 
 except:
     pass
-
-# -----------------------------
-# DOWNLOAD FULL DATASET
-# -----------------------------
 
 try:
     dataset = pd.read_sql("""
@@ -205,7 +252,7 @@ except:
     pass
 
 # -----------------------------
-# ADVANCED STRUCTURED REPORT
+# STRUCTURED REPORT
 # -----------------------------
 
 st.subheader("📄 Generate Full Structured Report")
@@ -214,70 +261,40 @@ if st.button("Generate Report"):
 
     report_data = []
 
-    # ---------------- MODEL INFO ----------------
-
+    # MODEL INFO
     report_data.append(["Model Info", "Model Version", "v1"])
     report_data.append(["Model Info", "Generated On", str(datetime.date.today())])
+    report_data.append(["Model Info", "Dataset Size", int(total.iloc[0]["total"])])
+
+    # PERFORMANCE
+    report_data.append(["Performance", "Accuracy", round(accuracy,3)])
+    report_data.append(["Performance", "Precision", round(precision,3)])
+    report_data.append(["Performance", "Recall", round(recall,3)])
+    report_data.append(["Performance", "F1 Score", round(f1,3)])
+
+    # DATASET
+    report_data.append(["Dataset", "Total Labels", int(total.iloc[0]["total"])])
 
     try:
-        total_labels = pd.read_sql(
-            "SELECT COUNT(*) as total FROM labels",
-            conn
-        ).iloc[0]["total"]
-    except:
-        total_labels = 0
-
-    report_data.append(["Model Info", "Dataset Size", total_labels])
-
-    # ---------------- PERFORMANCE ----------------
-
-    report_data.append(["Performance", "Accuracy", "Dynamic"])
-    report_data.append(["Performance", "Precision", "Dynamic"])
-    report_data.append(["Performance", "Recall", "Dynamic"])
-
-    # ---------------- DATASET ----------------
-
-    report_data.append(["Dataset", "Total Labels", total_labels])
-
-    try:
-        dist = pd.read_sql("""
-        SELECT label, COUNT(*) as count
-        FROM labels
-        GROUP BY label
-        """, conn)
-
         for _, row in dist.iterrows():
             report_data.append(["Dataset", f"{row['label']} count", row["count"]])
     except:
         pass
 
-    # ---------------- EMPLOYEE STATS ----------------
-
+    # EMPLOYEE
     try:
-        emp = pd.read_sql("""
-        SELECT employee_name, COUNT(*) as total
-        FROM labels
-        GROUP BY employee_name
-        """, conn)
-
-        for _, row in emp.iterrows():
-            report_data.append(["Employee", f"{row['employee_name']} labels", row["total"]])
+        for _, row in employee_report.iterrows():
+            report_data.append(["Employee", f"{row['employee_name']} labels", row["total_labels"]])
     except:
         pass
-
-    # ---------------- CREATE DATAFRAME ----------------
 
     report_df = pd.DataFrame(report_data, columns=["Section", "Metric", "Value"])
 
     st.dataframe(report_df)
 
-    # ---------------- DOWNLOAD REPORT ----------------
-
-    csv = report_df.to_csv(index=False)
-
     st.download_button(
-        "Download Full Structured Report",
-        csv,
+        "Download Full Report",
+        report_df.to_csv(index=False),
         "film_sentiment_report.csv",
         "text/csv"
     )
